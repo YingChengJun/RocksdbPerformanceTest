@@ -14,7 +14,8 @@
 
 ##### 不同memtable数量的性能曲线：
 
-- 
+- 在所有的memtable总大小一定的情况下，memtable数量的增多（每个memtable的size减少），会使得memtable更快被写满，就会需要更多的Flush和Compaction操作，发生抖动的频率也越高。
+- 从性能上来看，memtable数量越多，查询的层数越多，会更加不利于查询。
 
 ##### 不同cf数量的性能曲线：
 
