@@ -48,48 +48,37 @@ ColumnFamilyData* prev_;
 
 CFD的一些基本属性：
 
-- CFD中保存了指向Version的引用，Version使用双向循环链表串联，`dummy_versions_`为链表头，`current_`即指向链表尾（最新的Version）
+- CFD中保存了指向Version的引用，Version使用双向循环链表串联，`dummy_versions_`为链表头，`current_`即指向链表尾（最新的Version）。
+- `log_number_`保存了该CFD中最早的日志编号，更早的日志在数据恢复时将会被忽略。
+- 如果该CFD在FlushQueue或者CompactionQueue中，对应地`queued_for_flush_`或`queued_for_compaction_`将为`true`。
 
 ```cpp
 uint32_t id_;
 const std::string name_;
-Version* dummy_versions_;  // Head of circular doubly-linked list of versions.
-Version* current_;         // == dummy_versions->prev_
-
-std::atomic<int> refs_;      // outstanding references to ColumnFamilyData
+Version* dummy_versions_;
+Version* current_;
+std::atomic<int> refs_;
 std::atomic<bool> initialized_;
-std::atomic<bool> dropped_;  // true if client dropped it
-
+std::atomic<bool> dropped_;
 MemTable* mem_;
 MemTableList imm_;
 SuperVersion* super_version_;
 std::atomic<uint64_t> super_version_number_;
-
 uint64_t log_number_;
 std::atomic<FlushReason> flush_reason_;
 std::unique_ptr<CompactionPicker> compaction_picker_;
-
 ColumnFamilySet* column_family_set_;
-
 std::unique_ptr<WriteControllerToken> write_controller_token_;
 bool queued_for_flush_;
 bool queued_for_compaction_;
-
 uint64_t prev_compaction_needed_bytes_;
 bool allow_2pc_;
-
-// Memtable id to track flush.
 std::atomic<uint64_t> last_memtable_id_;
-
-// Directories corresponding to cf_paths.
 std::vector<std::shared_ptr<FSDirectory>> data_dirs_;
-
 bool db_paths_registered_;
 ```
 
 
-
-#### ColumnFamilySet VS ColumnFamilyHandle
 
 
 
