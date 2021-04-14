@@ -8,17 +8,19 @@ VersionStorageInfo是Version的信息存储结构，每个Version的SST文件信
 
 #### Version
 
-Version是SST的一个完整的版本，SST的信息存储在VersionStorageInfo中，可以在这个版本上GET数据。
+这个是RocksDB内部概念。一个版本包含某个时间点的所有存活SST文件。一旦一个落盘或者压缩完成，由于存活SST文件发生了变化，一个新的“版本”会被创建。一个旧的“版本”还会被仍在进行的读请求或者压缩工作使用。旧的版本最终会被回收。
 
 > Note：学习的优先级较低，之后再补充
 
 #### SuperVersion
 
+RocksDB的内部概念。一个超级版本包含一个特定时间的 的 一个SST文件列表（一个“版本”）以及一个存活memtable的列表。不管是压缩还是落盘，抑或是一个memtable切换，都会生成一个新的“超级版本”。一个旧的“超级版本”会被继续用于正在进行的读请求。旧的超级版本最终会在不再需要的时候被回收掉。
+
 SuperVersion是DB的一个完整版本，它包含所有的信息：当前的MemTable、Imm MemTable和一个Version（包含SST的数据信息）的引用。访问SuperVersion中的成员不是线程安全的，需要额外加锁。
 
 ![image-20210409233219632](RocksDBVersion.assets/image-20210409233219632.png)
 
-- `cfd`表示该SuperVersion所指向的CFD：CFD和SuperVersion是一对多的关系，一个CFD中可能会存在多个SuperVersion，因此一个SuperVersion可以唯一确定一个CFD。
+- `cfd`表示该SuperVersion所指向的CFD：CFD和SuperVersion是一对多的关系，一个CFD中可能会存在多个SuperVersion（一个是最新的，其它的是旧的），因此一个SuperVersion可以唯一确定一个CFD。
 
 ![image-20210411202109290](RocksDBVersion.assets/image-20210411202109290.png)
 
