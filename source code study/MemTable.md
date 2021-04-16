@@ -254,6 +254,10 @@ int InlineSkipList<Comparator>::RandomHeight() {
 
 
 
+#### SkipList示意图
+
+![Rocksdb Code Analysis Memtable ·](MemTable.assets/1000px-Skip_list.svg.png)
+
 ## 备注
 
 在实现我们设置的新的数据结构时，创建一个新的Rep继承MemTableRep，然后实现里面的一些方法。再加一个标记为加入到ImmList中。
