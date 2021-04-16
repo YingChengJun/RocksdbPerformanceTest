@@ -120,7 +120,7 @@ class SkipListRep : public MemTableRep {
 
 #### InlineSkipList::Node
 
-在Node中将Key和链表每层的指针连续存储，相比于Key存指针的优势在于：减少部分内存的使用，并且可以更好地利用Cache的局部性。
+**柔性数组：**在Node中将Key和链表每层的指针连续存储，相比于Key存指针的优势在于：减少部分内存的使用，并且可以更好地利用Cache的局部性。
 
 `next_[i]`表示指向第`i`层后面一个Node的指针，`next_[1]`及之后的内存空间用于存储Key。跳跃表中层次`level`的范围为`[0, maxHeight-1]`。
 
@@ -182,7 +182,7 @@ void InsertAfter(Node* prev, int level) {
 
 #### InlineSkipList::Splice
 
-在非并发写入的情况下，`prev_`和`next_`是一个由`Node*`构成的数组，它保存了上一次遍历时每层`prev`和`next`的位置，并且一定满足`prev_[i+1].key <= prev_[i].key < next_[i].key <= next_[i+1]`（画个图就能理解），即低层的范围一定比高层小。
+**Splice对象主要保存着最近一次插入的节点快照：**在非并发写入的情况下，`prev_`和`next_`是一个由`Node*`构成的数组，它保存了上一次插入时每层`prev`和`next`的位置，并且一定满足`prev_[i+1].key <= prev_[i].key < next_[i].key <= next_[i+1]`（画个图就能理解），即低层的范围一定比高层小。
 
 在插入时，会从低层到高层遍历 `Splice`，若发现某一层包围了 `key`，说明更高的层都一定包围了这个`Key`，因此从这层开始遍历即可。
 
@@ -252,7 +252,130 @@ int InlineSkipList<Comparator>::RandomHeight() {
 
 #### InlineSkipList插入过程
 
+参考链接：https://gocode.cc/project/13/article/184
 
+```cpp
+bool InlineSkipList<Comparator>::Insert(const char* key, Splice* splice,
+                                        bool allow_partial_splice_fix) {
+  Node* x = reinterpret_cast<Node*>(const_cast<char*>(key)) - 1;
+  const DecodedKey key_decoded = compare_.decode_key(key);
+
+  // 取出插入节点的高度
+  int height = x->UnstashHeight();
+  assert(height >= 1 && height <= kMaxHeight_);
+
+  // 与跳跃表当前的高度max_height(注意max_height是跳跃表当前的高度，而kMaxHeight是跳跃表最大允许的高度：默认12)进行比较
+  // 当发现插入的高度大于跳跃表当前的高度时，更新该高度
+  // 因为此时可能有多个线程同时写入，所以需要进行判断更新是否成功写入，如果成功写入或者其它线程已经更新了高度那么就退出循环
+  int max_height = max_height_.load(std::memory_order_relaxed);
+  while (height > max_height) {
+    if (max_height_.compare_exchange_weak(max_height, height)) {
+      max_height = height;
+      break;
+    }
+  }
+  assert(max_height <= kMaxPossibleHeight);
+
+  int recompute_height = 0;
+  if (splice->height_ < max_height) {
+    // 若Splice对象从来没有被使用过，或者跳跃表高度增大了，这时需要初始化跳跃表高度位置的splice标记
+    // 将最大高度的splice的prev和next分别设置为无穷小的head_和无穷大的null
+    // 并记录Splice的高度为当前跳跃表的高度
+    splice->prev_[max_height] = head_;
+    splice->next_[max_height] = nullptr;
+    splice->height_ = max_height;
+    recompute_height = max_height;
+  } else {
+    while (recompute_height < max_height) {
+      if (splice->prev_[recompute_height]->Next(recompute_height) !=
+          splice->next_[recompute_height]) {
+        ++recompute_height;
+      } else if (splice->prev_[recompute_height] != head_ &&
+                 !KeyIsAfterNode(key_decoded,
+                                 splice->prev_[recompute_height])) {
+        if (allow_partial_splice_fix) {
+          Node* bad = splice->prev_[recompute_height];
+          while (splice->prev_[recompute_height] == bad) {
+            ++recompute_height;
+          }
+        } else {
+          recompute_height = max_height;
+        }
+      } else if (KeyIsAfterNode(key_decoded, splice->next_[recompute_height])) {
+        if (allow_partial_splice_fix) {
+          Node* bad = splice->next_[recompute_height];
+          while (splice->next_[recompute_height] == bad) {
+            ++recompute_height;
+          }
+        } else {
+          recompute_height = max_height;
+        }
+      } else {
+        break;
+      }
+    }
+  }
+  assert(recompute_height <= max_height);
+  if (recompute_height > 0) {
+    RecomputeSpliceLevels(key_decoded, splice, recompute_height);
+  }
+
+  bool splice_is_valid = true;
+  if (UseCAS) {
+    // ...
+  } else {
+    for (int i = 0; i < height; ++i) {
+      if (i >= recompute_height &&
+          splice->prev_[i]->Next(i) != splice->next_[i]) {
+        FindSpliceForLevel<false>(key_decoded, splice->prev_[i], nullptr, i,
+                                  &splice->prev_[i], &splice->next_[i]);
+      }
+      // Checking for duplicate keys on the level 0 is sufficient
+      if (UNLIKELY(i == 0 && splice->next_[i] != nullptr &&
+                   compare_(x->Key(), splice->next_[i]->Key()) >= 0)) {
+        // duplicate key
+        return false;
+      }
+      if (UNLIKELY(i == 0 && splice->prev_[i] != head_ &&
+                   compare_(splice->prev_[i]->Key(), x->Key()) >= 0)) {
+        // duplicate key
+        return false;
+      }
+      assert(splice->next_[i] == nullptr ||
+             compare_(x->Key(), splice->next_[i]->Key()) < 0);
+      assert(splice->prev_[i] == head_ ||
+             compare_(splice->prev_[i]->Key(), x->Key()) < 0);
+      assert(splice->prev_[i]->Next(i) == splice->next_[i]);
+      x->NoBarrier_SetNext(i, splice->next_[i]);
+      splice->prev_[i]->SetNext(i, x);
+    }
+  }
+  if (splice_is_valid) {
+    for (int i = 0; i < height; ++i) {
+      splice->prev_[i] = x;
+    }
+    assert(splice->prev_[splice->height_] == head_);
+    assert(splice->next_[splice->height_] == nullptr);
+    for (int i = 0; i < splice->height_; ++i) {
+      assert(splice->next_[i] == nullptr ||
+             compare_(key, splice->next_[i]->Key()) < 0);
+      assert(splice->prev_[i] == head_ ||
+             compare_(splice->prev_[i]->Key(), key) <= 0);
+      assert(splice->prev_[i + 1] == splice->prev_[i] ||
+             splice->prev_[i + 1] == head_ ||
+             compare_(splice->prev_[i + 1]->Key(), splice->prev_[i]->Key()) <
+             0);
+      assert(splice->next_[i + 1] == splice->next_[i] ||
+             splice->next_[i + 1] == nullptr ||
+             compare_(splice->next_[i]->Key(), splice->next_[i + 1]->Key()) <
+             0);
+    }
+  } else {
+    splice->height_ = 0;
+  }
+  return true;
+}
+```
 
 #### SkipList示意图
 
@@ -261,5 +384,7 @@ int InlineSkipList<Comparator>::RandomHeight() {
 ## 备注
 
 在实现我们设置的新的数据结构时，创建一个新的Rep继承MemTableRep，然后实现里面的一些方法。再加一个标记为加入到ImmList中。
+
+Rep可以使用B+树实现。在MemTable被转换成ImmTable时，使用一个后台线程，将它转换成或者合并进Rep中，再删除掉原来的ImmTable。
 
 TODO：具体的使用方式参考IMM的设计
