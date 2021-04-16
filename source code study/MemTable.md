@@ -1,14 +1,14 @@
-# MemTable
+# RocksDB MemTable
 
-#### MemTable
-
-
-
-#### MemTableListVersion
+### MemTable
 
 
 
-#### MemTableRep
+### MemTableListVersion
+
+
+
+### MemTableRep
 
 MemTableRep是使用不同数据结构的MemTable实现的基类，RocksDB在MemTableRep的基础上实现SkipListRep、HashSkipListRep、VectorRep，即为MemTable提供了跳跃表、哈希跳跃表和向量的数据结构实现。其使用了工厂方法模式，类之间的关系图如下：
 
@@ -106,7 +106,7 @@ class MemTableRep {
 };
 ```
 
-#### SkipListRep & InlineSkipList
+### SkipListRep & InlineSkipList
 
 SkipListRep持有了一个InlineSkipList对象，通过调用InlineSkipList中的方法来实现MemTable的操作：
 
@@ -118,13 +118,11 @@ class SkipListRep : public MemTableRep {
 
 ![image-20210414140750606](MemTable.assets/image-20210414140750606.png)
 
-##### InlineSkipList::Node
+#### InlineSkipList::Node
 
 在Node中将Key和链表每层的指针连续存储，相比于Key存指针的优势在于：减少部分内存的使用，并且可以更好地利用Cache的局部性。
 
-`next_[0]`用于存储高度，`next_[i](i>1)`表示指向第`i`层后面一个Node的指针，`next_[1]`及之后的内存空间用于存储Key：
-
-> RocksDB在new新节点时会把height写在next_[0]的前4个字节处，然后将这个节点插入的时候再读出来，这时候next_[0]又变成了一个指针。
+`next_[i]`表示指向第`i`层后面一个Node的指针，`next_[1]`及之后的内存空间用于存储Key。跳跃表中层次`level`的范围为`[0, maxHeight-1]`。
 
 ![image-20210414141720866](MemTable.assets/image-20210414141720866.png)
 
@@ -135,7 +133,54 @@ struct InlineSkipList<Comparator>::Node {
 };
 ```
 
-##### InlineSkipList::Splice
+Node对象在被分配空间时就会计算高度，并写入到`next_[0]`的前4个字节中：
+
+- `prefix`表示存储存储`next[-(height-1),-1]`的指针所需要的字节数。在这里`next[0]`是`Node`对象自带的，我们不需要为它申请空间。刚开始`next[0]`存储的是该Node的高度，不过`next[0]`之后会用作跳跃表最底层的Node的指针。（画个图很好理解）
+
+- `raw`表示总共申请到的空间，我们需要为`prefix`、`Node`和`key`分别分配对应的空间。
+- `raw`向后移动`prefix`个字节后指向的就是`Node`对象，然后把该Node的高度存入即可。
+
+```cpp
+template <class Comparator>
+typename InlineSkipList<Comparator>::Node*
+InlineSkipList<Comparator>::AllocateNode(size_t key_size, int height) {
+  auto prefix = sizeof(std::atomic<Node*>) * (height - 1);
+
+  char* raw = allocator_->AllocateAligned(prefix + sizeof(Node) + key_size);
+  Node* x = reinterpret_cast<Node*>(raw + prefix);
+
+  x->StashHeight(height);
+  return x;
+}
+```
+
+![IMG_0076(20210415-202920)](MemTable.assets/IMG_0076(20210415-202920).PNG)Node中一些方法：
+
+```cpp
+// 返回该节点第n层指向的Node节点(n>=0)
+Node* Next(int n) {
+    assert(n >= 0);
+    return ((&next_[0] - n)->load(std::memory_order_acquire));
+}
+
+// 将该节点第n层指向的node节点设为x
+void SetNext(int n, Node* x) {
+    assert(n >= 0);
+    (&next_[0] - n)->store(x, std::memory_order_release);
+}
+
+// 将该节点放置在prev节点的第level层之后
+// 本质是一个链表插入操作
+void InsertAfter(Node* prev, int level) {
+    // 记 nn = prev->NoBarrier_Next(level)，即prev原来指向的下一个节点
+    // this_node->next = nn
+    NoBarrier_SetNext(level, prev->NoBarrier_Next(level));
+    // 即 prev->next=this_node in this level
+    prev->SetNext(level, this);
+}
+```
+
+#### InlineSkipList::Splice
 
 在非并发写入的情况下，`prev_`和`next_`是一个由`Node*`构成的数组，它保存了上一次遍历时每层`prev`和`next`的位置，并且一定满足`prev_[i+1].key <= prev_[i].key < next_[i].key <= next_[i+1]`（画个图就能理解），即低层的范围一定比高层小。
 
@@ -149,52 +194,43 @@ struct InlineSkipList<Comparator>::Splice {
 };
 ```
 
-##### InlineSkipList中一些常见的比较查找函数
+Allocator为Splice分配空间的函数和示意图如下：
 
 ```cpp
-// Return true if key is greater than the data stored in "n".  Null n
-// is considered infinite.  n should not be head_.
+template <class Comparator>
+typename InlineSkipList<Comparator>::Splice*
+InlineSkipList<Comparator>::AllocateSplice() {
+    // Question: 这里为什么是要申请kMaxHeight_ + 1个而不是kMaxHeight_个？
+    size_t array_size = sizeof(Node*) * (kMaxHeight_ + 1);
+    char* raw = allocator_->AllocateAligned(sizeof(Splice) + array_size * 2);
+    Splice* splice = reinterpret_cast<Splice*>(raw);
+    splice->height_ = 0;
+    splice->prev_ = reinterpret_cast<Node**>(raw + sizeof(Splice));
+    splice->next_ = reinterpret_cast<Node**>(raw + sizeof(Splice) + array_size);
+    return splice;
+}
+```
+
+![image-20210415232315687](MemTable.assets/image-20210415232315687.png)
+
+#### InlineSkipList中一些常见的比较查找函数
+
+```cpp
 bool KeyIsAfterNode(const char* key, Node* n) const;
 bool KeyIsAfterNode(const DecodedKey& key, Node* n) const;
-
-// Returns the earliest node with a key >= key.
-// Return nullptr if there is no such node.
 Node* FindGreaterOrEqual(const char* key) const;
-
-// Return the latest node with a key < key.
-// Return head_ if there is no such node.
-// Fills prev[level] with pointer to previous node at "level" for every
-// level in [0..max_height_-1], if prev is non-null.
 Node* FindLessThan(const char* key, Node** prev = nullptr) const;
-
-// Return the latest node with a key < key on bottom_level. Start searching
-// from root node on the level below top_level.
-// Fills prev[level] with pointer to previous node at "level" for every
-// level in [bottom_level..top_level-1], if prev is non-null.
 Node* FindLessThan(const char* key, Node** prev, Node* root, int top_level,
                    int bottom_level) const;
-
-// Return the last node in the list.
-// Return head_ if list is empty.
 Node* FindLast() const;
-
-// Traverses a single level of the list, setting *out_prev to the last
-// node before the key and *out_next to the first node after. Assumes
-// that the key is not present in the skip list. On entry, before should
-// point to a node that is before the key, and after should point to
-// a node that is after the key.  after should be nullptr if a good after
-// node isn't conveniently available.
 template<bool prefetch_before>
 void FindSpliceForLevel(const DecodedKey& key, Node* before, Node* after, int level,
                         Node** out_prev, Node** out_next);
-
-// Recomputes Splice levels from highest_level (inclusive) down to
-// lowest_level (inclusive).
 void RecomputeSpliceLevels(const DecodedKey& key, Splice* splice,
                            int recompute_level);
 ```
 
-##### 随机高度生成
+#### InlineSkipList随机高度生成
 
 以 1 / kBranching 的概率生成提升高度（默认为1/4），其原理是随机生成一个随机数`rnd->next()`，当这个值小于等于`Random::kMaxNext + 1) / kBranching_`（即`kScaledInverseBranching_`）时，会提升高度，大于时不提升高度。按照均匀概率分布，其提升的概率就是 1 / kBranching 。
 
@@ -214,10 +250,12 @@ int InlineSkipList<Comparator>::RandomHeight() {
 }
 ```
 
+#### InlineSkipList插入过程
+
 
 
 ## 备注
 
-在实现我们设置的新的数据结构时，创建一个新的Rep继承MemTableRep，然后实现里面的一些方法。
+在实现我们设置的新的数据结构时，创建一个新的Rep继承MemTableRep，然后实现里面的一些方法。再加一个标记为加入到ImmList中。
 
 TODO：具体的使用方式参考IMM的设计
