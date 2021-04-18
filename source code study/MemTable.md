@@ -2,7 +2,7 @@
 
 ### MemTable & MemTableList & MemTableListVersion
 
-MemTable切换成Imm的过程
+![image-20210418200001752](MemTable.assets/image-20210418200001752.png)
 
 ### MemTableRep
 
