@@ -4,9 +4,10 @@
 
 ##### 待学习内容：
 
-- [ ] writecontroller
-- [ ] 2pc
-- [ ] unordered_writes
-- [ ] column_family.h
-- [ ] memtable.h，memtable是如何选择不同数据结构实现的，imm和mem是怎么封装的
-- [ ] env
+- [x] Memtable是如何选择不同数据结构实现的，Imm和Mem是怎么封装的
+- [x] Get
+- [x] Iterator：https://www.jianshu.com/p/f57891ef06e0
+- [x] SkipList
+- [ ] Flush & Compaction，Key判断怎么留下来或者淘汰
+- [x] Arena
+

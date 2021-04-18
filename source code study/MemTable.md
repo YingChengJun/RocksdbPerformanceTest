@@ -1,12 +1,8 @@
 # RocksDB MemTable
 
-### MemTable
+### MemTable & MemTableList & MemTableListVersion
 
-
-
-### MemTableListVersion
-
-
+MemTable切换成Imm的过程
 
 ### MemTableRep
 
