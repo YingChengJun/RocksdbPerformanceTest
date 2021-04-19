@@ -2,7 +2,11 @@
 
 ### MemTable & MemTableList & MemTableListVersion
 
-![image-20210418200001752](MemTable.assets/image-20210418200001752.png)
+![image-20210418203721439](MemTable.assets/image-20210418203721439.png)
+
+MemTableList可以看做是对MemTableListVersion的一层封装，其持有了一个MemTableListVersion类型的`current`对象来指明当前Imm的正确版本。
+
+CFD对象中持有一个MemTableList对象，其中涉及到的一些参数用于在Flush的过程中需要对CFD对象进行Flush的条件判断。
 
 ### MemTableRep
 

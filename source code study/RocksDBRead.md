@@ -410,8 +410,6 @@ bool MemTableListVersion::GetFromList(
 
 ## 备注
 
-在实现的时候，查完未合并的Imm MemTable之后需要再查我们设计的数据结构。
-
 如果要用布隆过滤器可以直接用现成的`DynamicBloom`。
 
 
