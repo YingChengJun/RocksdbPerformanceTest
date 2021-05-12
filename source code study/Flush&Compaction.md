@@ -32,47 +32,91 @@ void DBImpl::SchedulePendingFlush(const FlushRequest& flush_req,
 
 ```cpp
 void DBImpl::MaybeScheduleFlushOrCompaction() {
-    // ...
-    auto bg_job_limits = GetBGJobLimits();
-    bool is_flush_pool_empty =
-        env_->GetBackgroundThreads(Env::Priority::HIGH) == 0;
-    while (!is_flush_pool_empty && unscheduled_flushes_ > 0 &&
-           bg_flush_scheduled_ < bg_job_limits.max_flushes) {
-        bg_flush_scheduled_++;
-        FlushThreadArg* fta = new FlushThreadArg;
-        fta->db_ = this;
-        fta->thread_pri_ = Env::Priority::HIGH;
-        env_->Schedule(&DBImpl::BGWorkFlush, fta, Env::Priority::HIGH, this,
-                       &DBImpl::UnscheduleFlushCallback);
-        --unscheduled_flushes_;
-    }
+  mutex_.AssertHeld();
+  if (!opened_successfully_) {
+    // Compaction may introduce data race to DB open
+    return;
+  }
+  if (bg_work_paused_ > 0) {
+    // we paused the background work
+    return;
+  } else if (error_handler_.IsBGWorkStopped() &&
+             !error_handler_.IsRecoveryInProgress()) {
+    // There has been a hard error and this call is not part of the recovery
+    // sequence. Bail out here so we don't get into an endless loop of
+    // scheduling BG work which will again call this function
+    return;
+  } else if (shutting_down_.load(std::memory_order_acquire)) {
+    // DB is being deleted; no more background compactions
+    return;
+  }
+  auto bg_job_limits = GetBGJobLimits();
+  // Note: 此处判断了线程池是否有高优先级的线程
+  bool is_flush_pool_empty =
+    env_->GetBackgroundThreads(Env::Priority::HIGH) == 0;
+  while (!is_flush_pool_empty && unscheduled_flushes_ > 0 &&
+         bg_flush_scheduled_ < bg_job_limits.max_flushes) {
+    bg_flush_scheduled_++;
+    FlushThreadArg* fta = new FlushThreadArg;
+    fta->db_ = this;
+    fta->thread_pri_ = Env::Priority::HIGH;
+    // Note: 此处调度了一个后台线程来执行Flush操作
+    // 第一个参数function是该线程被调度时执行的函数
+    // 第二个参数arg是要传入到函数中的参数
+    // 第三个参数是该线程的优先级
+    // 第五个参数是该线程被取消调度时执行的函数，UnscheduleFlushCallback的作用是释放fta的空间
+    env_->Schedule(&DBImpl::BGWorkFlush, fta, Env::Priority::HIGH, this,
+                   &DBImpl::UnscheduleFlushCallback);
+    --unscheduled_flushes_;
+    TEST_SYNC_POINT_CALLBACK(
+      "DBImpl::MaybeScheduleFlushOrCompaction:AfterSchedule:0",
+      &unscheduled_flushes_);
+  }
 
-    // special case -- if high-pri (flush) thread pool is empty, then schedule
-    // flushes in low-pri (compaction) thread pool.
-    if (is_flush_pool_empty) {
-        while (unscheduled_flushes_ > 0 &&
-               bg_flush_scheduled_ + bg_compaction_scheduled_ <
-               bg_job_limits.max_flushes) {
-            bg_flush_scheduled_++;
-            FlushThreadArg* fta = new FlushThreadArg;
-            fta->db_ = this;
-            fta->thread_pri_ = Env::Priority::LOW;
-            env_->Schedule(&DBImpl::BGWorkFlush, fta, Env::Priority::LOW, this,
-                           &DBImpl::UnscheduleFlushCallback);
-            --unscheduled_flushes_;
-        }
+  // special case -- if high-pri (flush) thread pool is empty, then schedule
+  // flushes in low-pri (compaction) thread pool.
+  if (is_flush_pool_empty) {
+    while (unscheduled_flushes_ > 0 &&
+           bg_flush_scheduled_ + bg_compaction_scheduled_ <
+           bg_job_limits.max_flushes) {
+      bg_flush_scheduled_++;
+      FlushThreadArg* fta = new FlushThreadArg;
+      fta->db_ = this;
+      fta->thread_pri_ = Env::Priority::LOW;
+      env_->Schedule(&DBImpl::BGWorkFlush, fta, Env::Priority::LOW, this,
+                     &DBImpl::UnscheduleFlushCallback);
+      --unscheduled_flushes_;
     }
-	//...
-    while (bg_compaction_scheduled_ < bg_job_limits.max_compactions &&
-           unscheduled_compactions_ > 0) {
-        CompactionArg* ca = new CompactionArg;
-        ca->db = this;
-        ca->prepicked_compaction = nullptr;
-        bg_compaction_scheduled_++;
-        unscheduled_compactions_--;
-        env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::LOW, this,
-                       &DBImpl::UnscheduleCompactionCallback);
-    }
+  }
+
+  if (bg_compaction_paused_ > 0) {
+    // we paused the background compaction
+    return;
+  } else if (error_handler_.IsBGWorkStopped()) {
+    // Compaction is not part of the recovery sequence from a hard error. We
+    // might get here because recovery might do a flush and install a new
+    // super version, which will try to schedule pending compactions. Bail
+    // out here and let the higher level recovery handle compactions
+    return;
+  }
+
+  if (HasExclusiveManualCompaction()) {
+    // only manual compactions are allowed to run. don't schedule automatic
+    // compactions
+    TEST_SYNC_POINT("DBImpl::MaybeScheduleFlushOrCompaction:Conflict");
+    return;
+  }
+
+  while (bg_compaction_scheduled_ < bg_job_limits.max_compactions &&
+         unscheduled_compactions_ > 0) {
+    CompactionArg* ca = new CompactionArg;
+    ca->db = this;
+    ca->prepicked_compaction = nullptr;
+    bg_compaction_scheduled_++;
+    unscheduled_compactions_--;
+    env_->Schedule(&DBImpl::BGWorkCompaction, ca, Env::Priority::LOW, this,
+                   &DBImpl::UnscheduleCompactionCallback);
+  }
 }
 ```
 
