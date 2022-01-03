@@ -3,7 +3,7 @@
 # cat memtable/bptree_rep.cc | grep order
 
 RunCmd () {
-    echo "Start Run Test: key_nums = ${key_nums}, write_buffer_size = ${memtable_size}, min_write_buffer_number_to_merge = ${min_write_buffer_number_to_merge}, compaction_threshold = ${compaction_threshold}"
+    echo "Start Run Test: key_nums = ${key_nums}, write_buffer_size = ${memtable_size}, min_write_buffer_number_to_merge = ${min_write_buffer_number_to_merge}, compaction_threshold = ${compaction_threshold}, total_write_buf_size=${db_write_buffer_size}"
     ${db_bench} \
     --benchmarks="readrandomwriterandom" \
     --db=${db_dir} \
@@ -20,6 +20,7 @@ RunCmd () {
     --max_background_compactions=${thread_compaction_nums} \
     --max_background_flushes=${thread_flush_nums} \
     --min_write_buffer_number_to_merge=${min_write_buffer_number_to_merge} \
+    --db_write_buffer_size=${db_write_buffer_size} \
     --disable_wal=true \
     --compaction_threshold=${compaction_threshold}
 }
@@ -52,7 +53,7 @@ RunDbBench () {
 RunOrigin() {
     db_bench="../db_bench_origin"
     report_file="../reports/db_bench_origin_k${key_nums}_m${min_write_buffer_number_to_merge}.csv"
-    echo "Start Run Test: key_nums = ${key_nums}, write_buffer_size = ${memtable_size}, min_write_buffer_number_to_merge = ${min_write_buffer_number_to_merge}"
+    echo "Start Run Test: key_nums = ${key_nums}, write_buffer_size = ${memtable_size}, min_write_buffer_number_to_merge = ${min_write_buffer_number_to_merge}, total_write_buf_size=${db_write_buffer_size}"
     ${db_bench} \
     --benchmarks="readrandomwriterandom" \
     --db=${db_dir} \
@@ -69,6 +70,7 @@ RunOrigin() {
     --max_background_compactions=${thread_compaction_nums} \
     --max_background_flushes=${thread_flush_nums} \
     --min_write_buffer_number_to_merge=${min_write_buffer_number_to_merge} \
+    --db_write_buffer_size=${db_write_buffer_size} \
     --disable_wal=true
     cp ../db/LOG "../logs/db_bench_origin_k${key_nums}_m${min_write_buffer_number_to_merge}.log"
 }
@@ -76,28 +78,35 @@ RunOrigin() {
 # Run Default Config
 Test_0() {
     source common.sh
+    RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
     RunOrigin
     RunDbBench SkipList 0 "c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
-    RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
 }
 
 # Test different BpTree fan out use
 Test_1() {
     source common.sh
-    RunDbBench BpTree 512 "o512_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
-    RunDbBench BpTree 256 "o256_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
-    RunDbBench BpTree 128 "o128_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
-    # Fan out = 64, Default Settings
-    RunDbBench BpTree 32 "o32_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
-    RunDbBench BpTree 16 "o16_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
-    RunDbBench BpTree 8 "o8_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
-    RunDbBench BpTree 4 "o4_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    key_nums=1280000
+    compaction_threshold=3
+    time_execute=1800
+
+    RunOrigin
+    RunDbBench SkipList 0 "t2_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    # RunDbBench BpTree 128 "t2_o128_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    RunDbBench BpTree 64 "t2_o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    # RunDbBench BpTree 256 "t2_o256_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    # RunDbBench BpTree 512 "t2_o512_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    # RunDbBench BpTree 32 "t2_o32_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    # RunDbBench BpTree 16 "t2_o16_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    # RunDbBench BpTree 8 "t2_o8_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
 }
 
 # Test different key Ranges
 Test_2() {
     source common.sh
-    # key range = 128W
+    time_execute=1200
+
+    # key range = 128W, Default Settings
     key_nums=1280000
     RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
     RunDbBench SkipList 0 "c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
@@ -107,7 +116,16 @@ Test_2() {
     RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
     RunDbBench SkipList 0 "c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
     RunOrigin
-    # key range = 512W, Default Settings
+    # key range = 512W
+    # key_nums=5120000
+    # RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    # RunDbBench SkipList 0 "c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    # RunOrigin
+    # key range = 512W
+    key_nums=7680000
+    RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    RunDbBench SkipList 0 "c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
+    RunOrigin
     # key range = 1024W
     key_nums=10240000
     RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
@@ -122,11 +140,11 @@ Test_3() {
     compaction_threshold=1
     RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
     RunDbBench SkipList 0 "c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
-    # 3 => 1
-    compaction_threshold=2
+    # 3 => 1, Default Settings
+    # 4 => 1
+    compaction_threshold=3
     RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
     RunDbBench SkipList 0 "c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
-    # 4 => 1, Default Settings
     # 5 => 1
     compaction_threshold=4
     RunDbBench BpTree 64 "o64_c${compaction_threshold}_k${key_nums}_m${min_write_buffer_number_to_merge}"
@@ -158,8 +176,8 @@ Test_4 () {
     RunOrigin
 }
 
-Test_0
+# Test_0
 Test_1
-Test_2
-Test_3
-Test_4
+# Test_2
+# Test_3
+# Test_4
